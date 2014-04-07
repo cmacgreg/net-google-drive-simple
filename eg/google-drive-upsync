@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl -w
+#!/usr/bin/perl -w
 use strict;
 use lib 'lib';
 
@@ -8,105 +8,137 @@ use Log::Log4perl qw(:easy);
 use File::Basename;
 use Getopt::Std;
 use Pod::Usage;
+use Digest::MD5::File qw( file_md5_hex );
+use Data::Dumper;
 
-getopts("hvn", \my %opts);
+getopts( "hvn", \my %opts );
 pod2usage() if $opts{h};
 
-my( $local_dir, $gd_dir ) = @ARGV;
+my ( $local_dir, $gd_dir ) = @ARGV;
 
-if( ! defined $gd_dir ) {
-    pod2usage( "No Google Drive dir given" );
+if ( !defined $gd_dir ) {
+    pod2usage("No Google Drive dir given");
 }
 
-if( ! -d $local_dir ) {
-    pod2usage( "$local_dir not a directory" );
+if ( !-d $local_dir ) {
+    pod2usage("$local_dir not a directory");
 }
 
 my $log_level = $INFO;
-$log_level = $DEBUG if $opts{ v };
+$log_level = $DEBUG if $opts{v};
 
-Log::Log4perl->easy_init( { 
-    level => $log_level, 
-    layout => "%d %F{1}:%L> %m%n"
-} );
-
-my %files_local = ();
-
-opendir DH, $local_dir;
-
-for my $file ( readdir DH ) {
-
-    my $path = "$local_dir/$file";
-
-    if( ! -f $path) {
-        next;
+Log::Log4perl->easy_init(
+    {
+        level  => $log_level,
+        layout => "%F{1}:%L> %m%n"
     }
-
-    $files_local{ $file } = -s $path;
-}
-
-closedir DH;
-
-INFO "Found ", scalar keys %files_local, " local files";
+);
 
 my $gd = Net::Google::Drive::Simple->new();
 
-INFO "Listing $gd_dir on Google Drive";
+my ( $entries_gd, $id ) = $gd->children("$gd_dir");
 
-my( $entries_gd, $parent ) = $gd->children( $gd_dir );
-
-if( !defined $entries_gd ) {
-    pod2usage( "$gd_dir can't be listed - does it exist?" );
+if( !defined $id ) {
+    LOGDIE "Couldn't find remote destination";
 }
 
-INFO "Found ", scalar @$entries_gd, " files on Google Drive";
+traverse( $local_dir, $gd_dir, $id);
 
-my %needs_update = ();
+sub traverse {
 
-for my $entry ( @$entries_gd ) {
-    if( $entry->kind() ne 'drive#file' ) {
-        DEBUG "Ignoring ", $entry->title();
-        next;
-    }
+    my ( $local_dir, $gd_dir, $parent ) = @_;
 
-    my $title = $entry->title();
+    my %files_local = ();
 
-    my $labels = $entry->labels();
+    opendir( my $DH, $local_dir );
 
-    if( $labels->{ trashed } ) {
-        INFO "Ignoring trashed file $title", 
-        next;
-    }
+    for my $file ( readdir $DH ) {
 
-    if( exists $files_local{ $title } ) {
-        if( $entry->fileSize() == $files_local{ $title } ) {
-            DEBUG "$title synched OK";
-            delete $files_local{ $title };
+        my $path = "$local_dir/$file";
+
+        if ( !-f $path ) {
+            if ( -d $path ) {
+                if ( $file ne '.' && $file ne '..' ) {
+                    my ( $entries_gd, $id ) = $gd->children("$gd_dir/$file");
+                    print Dumper $entries_gd;
+                    if ( !defined $entries_gd ) {
+                        $id = $gd->folder_create( $file, $parent );
+                        if ( !defined $id ) {
+                            LOGDIE "Couldn't create subfolder";
+                        }
+                    }
+                    traverse( "$path", "$gd_dir/$file", $id );
+                }
+            }
             next;
         }
-        ERROR "$title: different file size (local:$files_local{ $title } ",
-          "gdrive: ", $entry->fileSize();
-        $needs_update{ $title } = $entry;
-    } else {
-        INFO "Remote only: $title";
+
+        $files_local{$file} = file_md5_hex($path);
     }
-}
 
-for my $file ( sort keys %files_local ) {
+    closedir $DH;
 
-   my $file_id;
+    INFO "Found ", scalar keys %files_local, " local files";
 
-   if( exists $needs_update{ $file } ) {
-       INFO "Needs update: $file";
-       $file_id = $needs_update{ $file }->id();
-   } else {
-       INFO "Local only: $file";
-   }
+    INFO "Listing $gd_dir on Google Drive";
+    
+    my ( $entries_gd, $parent ) = $gd->children($gd_dir);
 
-   next if $opts{ n };
+    if ( !defined $entries_gd ) {
+        pod2usage("$gd_dir can't be listed - does it exist?");
+    }
 
-   INFO "Uploading file $file";
-   $gd->file_upload( "$local_dir/$file", $parent, $file_id );
+    INFO "Found ", scalar @$entries_gd, " files on Google Drive";
+
+    my %needs_update = ();
+
+    for my $entry (@$entries_gd) {
+        if ( $entry->kind() ne 'drive#file' ) {
+            DEBUG "Ignoring ", $entry->title();
+            next;
+        }
+
+        my $title = $entry->title();
+
+        my $labels = $entry->labels();
+
+        if ( $labels->{trashed} ) {
+            INFO "Ignoring trashed file $title", next;
+        }
+
+        if ( exists $files_local{$title} ) {
+            if ( $entry->md5Checksum() eq $files_local{$title} ) {
+                DEBUG "$title synced OK";
+                delete $files_local{$title};
+                next;
+            }
+            ERROR "$title: different md5sum (local: $files_local{ $title } ",
+              "gdrive: ", $entry->md5Checksum(), ")";
+            $needs_update{$title} = $entry;
+        }
+        else {
+            INFO "Remote only: $title";
+        }
+    }
+
+    for my $file ( sort keys %files_local ) {
+
+        my $file_id;
+
+        if ( exists $needs_update{$file} ) {
+            INFO "Needs update: $file";
+            $file_id = $needs_update{$file}->id();
+        }
+        else {
+            INFO "Local only: $file";
+        }
+
+        next if $opts{n};
+
+        INFO "Uploading file $file";
+        $gd->file_upload( "$local_dir/$file", $parent, $file_id );
+    }
+
 }
 
 __END__

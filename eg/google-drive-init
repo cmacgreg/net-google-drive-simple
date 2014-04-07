@@ -23,8 +23,8 @@ use URI;
   # https://developers.google.com/drive to use this.
 
   # You can pass the path on the command line or just enter the credentials to this file:
-my $client_id     = "XXX";
-my $client_secret = "YYY";
+my $client_id     = "542942405111.apps.googleusercontent.com";
+my $client_secret = "Y4iSAluo7pCY57m8HFOfv2W_";
 if( 'XXX' eq $client_id ) {
     # User did not patch the file, so we try to find the credentials from the command line
     if( !@ARGV ) {

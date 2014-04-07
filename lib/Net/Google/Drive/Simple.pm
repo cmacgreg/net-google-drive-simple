@@ -363,7 +363,8 @@ sub children {
             }
         }
 
-        LOGDIE "Child $part not found";
+        DEBUG "Child $part not found";
+        return undef;
     }
 
     DEBUG "Getting content of folder $folder_id";
@@ -423,12 +424,17 @@ sub data_factory {
 ###########################################
     my( $self, $data ) = @_;
 
+
+    # return $data; 
+
     my $mock = Test::MockObject->new();
 
     for my $key ( keys %$data ) {
         # DEBUG "Adding method $key";
         $mock->mock( $key , sub { $data->{ $key } } );
     }
+
+    $mock->mock ( "data", sub { $data } );
 
     return $mock;
 }
